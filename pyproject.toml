@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argolink-seedance-2-sdk"
+version = "0.1.0"
+description = "Argolink Seedance 2.0 API client and workflow examples"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.31,<3"]
+
+[project.optional-dependencies]
+mcp = ["mcp[cli]>=1,<2"]
+
+[tool.setuptools]
+py-modules = ["seedance_api", "mcp_server"]
