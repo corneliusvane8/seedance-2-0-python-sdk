@@ -1,53 +1,66 @@
-# Character consistency across Seedance 2.0 shots
+# Keeping a character consistent across Seedance 2.0 shots
 
-Keep a stable reference set across shots, then vary the action and camera description. References guide appearance; they do not guarantee identical faces or clothing in every frame.
+Seedance 2.0 has no saved-character feature on this API. Consistency comes from sending the same reference images with every shot and writing the prompt so the model knows which image is which. The advice below follows [BytePlus's Seedance 2.0 prompt guide](https://docs.byteplus.com/en/docs/modelark/seedance-2-0-prompt-guide) (checked 2026-10-07); the code uses this SDK.
 
-## Prepare a character reference set
+## 1. Prepare two images, not a character sheet
 
-Choose clear images of a fictional character from the front and from a three-quarter view. Keep hair, wardrobe, props, lighting, and age consistent. Use images you have permission to use. Upload them with `SeedanceAPI.upload_file(kind="image")` or host them at HTTPS URLs readable by the service.
+| Image | What it should show | Why |
+|---|---|---|
+| Headshot | the face only, neutral expression, plain background, no shoulders or props | a face that fills the frame gets more weight than one inside a busy picture |
+| Full body | the same person in the outfit you want, standing | carries clothing, hair and proportions |
 
-Record a small shot manifest:
-
-```json
-{
-  "character": "an explorer in a mustard raincoat, round glasses, short dark hair",
-  "reference_images": ["https://example.invalid/explorer-front.jpg", "https://example.invalid/explorer-side.jpg"],
-  "shots": [
-    {"id":"arrival","prompt":"Character in image 1 and image 2 steps onto a misty pier. Medium shot, slow dolly forward.","duration":5},
-    {"id":"discovery","prompt":"Same character as image 1 and image 2 lifts a brass compass. Close-up, soft overcast light.","duration":5}
-  ]
-}
-```
-
-Replace the example URLs with your own media. The reference array order stays fixed: `image 1` is the first image, `image 2` the second. A reference is guidance, while `start_image` fixes an opening frame. Choose one mode per request.
-
-## Generate and track shots
+Avoid multi-angle character sheets (front / side / back in one image or as several images). BytePlus reports that the model may read the angles as different people, which causes drifting faces and "twins" in the same frame.
 
 ```python
-import json
-from pathlib import Path
 from seedance_api import SeedanceAPI
 
 api = SeedanceAPI()
-manifest = json.loads(Path("shots.json").read_text())
-for shot in manifest["shots"]:
-    receipt = Path(f"{shot['id']}.job.json")
-    if receipt.exists():
-        job = json.loads(receipt.read_text())
-    else:
-        job = api.reference_to_video(
-            shot["prompt"], reference_images=manifest["reference_images"],
-            duration=shot["duration"], resolution="720p", aspect_ratio="16:9",
-        )
-        receipt.write_text(json.dumps({"request_id": job["request_id"]}))
-    api.wait_for_completion(job["request_id"], max_wait_seconds=900)
-    api.download(job["request_id"], f"{shot['id']}.mp4")
+headshot = api.upload_file("refs/mara-headshot.png")    # media_url, readable for 7 days
+full_body = api.upload_file("refs/mara-full-body.png")
 ```
 
-This sketch avoids repeat submissions when a receipt exists. If submission succeeds but the process exits before saving the receipt, the outcome is uncertain; inspect your job history before submitting again. Keep job receipts private and use a unique output directory for each project.
+## 2. Bind the name to the images in every prompt
 
-## Review continuity
+Give the character one label and attach the images each time it appears: `Mara (face from @Image 1, outfit from @Image 2)`. `@Image 1` is the first entry of `images`, so keep the list in the same order for every shot, and put the asset that matters most first.
 
-Compare opening, middle, and ending frames for face, clothing, handedness, held objects, light direction, and screen direction. Change one factor at a time when a shot drifts. Reuse the same reference images and preserve prompt nouns across shots. A more detailed prompt is useful only when its instructions are consistent.
+```python
+refs = [headshot, full_body]
+api.generate(
+    "Mara (face from @Image 1, outfit from @Image 2) pours coffee at a window counter; "
+    "she glances up and smiles slightly. Medium close-up, fixed camera, morning light. "
+    "Only one Mara in the frame.",
+    "shot-1.mp4", images=refs, duration=5, aspect_ratio="9:16",
+)
+```
 
-The integration uses ordinary `reference_images` and frame inputs. It does not provide a persistent character-registration endpoint or a special server-side character token.
+The closing sentence is the kind of global constraint BytePlus suggests against duplicated characters.
+
+## 3. Keep the rest of the brief stable
+
+- Repeat the same wardrobe and lighting words in each shot; change only the action and the camera.
+- One camera move per shot, and slow, specific actions (BytePlus: fast, large movements are less stable).
+- With more than four people, BytePlus suggests generating group images first and using those as references.
+- For a recurring voice, send the same `audios` clip each time and describe the voice in words ("low, warm, slightly husky"); audio needs an image or video beside it on the 2.0 family.
+
+## 4. Draft cheaply, then render
+
+The reference limits are the same on all three models, so a shot list can be tested on `seedance-2.0-mini` at 480p ($0.026/s) and re-rendered on `seedance-2.0` at 1080p ($0.28/s) by changing only `model` and `resolution`.
+
+## 5. Chaining shots through frames
+
+To continue exactly where a clip ended, take its last frame and start the next shot from it:
+
+```bash
+ffmpeg -sseof -0.1 -i shot-1.mp4 -frames:v 1 -update 1 shot-1-last.png
+```
+
+```python
+api.generate("Mara walks out of the café into the street", "shot-2.mp4",
+             start_image=api.upload_file("shot-1-last.png"), duration=5)
+```
+
+The trade-off: frame modes cannot carry reference lists, so this shot relies on the frame alone for the face. Alternate between the two methods depending on whether continuity of position or of identity matters more.
+
+## When a face is refused
+
+Content review can reject a reference that shows a real or well-known person. The job then ends as `failed` with `error.code == "content_policy_violation"` and `error.field` naming the input; it is not billed. BytePlus's own API does not take reference images of real human faces directly and offers preset digital characters and authorised-likeness workflows instead.
